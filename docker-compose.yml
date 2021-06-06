@@ -1,0 +1,104 @@
+version: "3.6"
+
+services:
+  wp_nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile.full
+    restart: unless-stopped
+    volumes:
+      - datawp:/var/www/html
+      - datanginxlogs:/var/log/nginx/
+      - ./nginx/conf/nginx-wp.conf:/etc/nginx/conf/default.conf
+    links:
+      - wp_core
+      - wp_memcached
+    ports:
+      - 8080:80
+    networks:
+      - wordpress
+      - default
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=gateway"
+      - "traefik.port=8080"
+      - "traefik.http.middlewares.redirect.redirectscheme.scheme=https"
+      - "traefik.http.routers.wp-insecure.rule=Host(`${FQDN_WP}`)"
+      - "traefik.http.routers.wp-insecure.middlewares=redirect"
+      - "traefik.http.routers.wp-ws.rule=Host(`${FQDN_WP}`) && Path(`/live/websocket`)"
+      - "traefik.http.routers.wp-ws.entrypoints=websecure"
+      - "traefik.http.routers.wp-ws.tls"
+      - "traefik.http.routers.wp.rule=Host(`${FQDN_WP}`)"
+      - "traefik.http.routers.wp.entrypoints=websecure"
+      - "traefik.http.routers.wp.tls.certresolver=myhttpchallenge"
+
+  wp_core:
+    build: ./wordpress
+    restart: unless-stopped
+    volumes:
+      - ./wordpress/conf/php/php.ini:/usr/local/etc/php/php.ini
+      - datawp:/var/www/html
+    depends_on:
+      - wp_db
+      - wp_redis
+      - wp_memcached
+    environment:
+      WORDPRESS_DB_HOST: ${WORDPRESS_DB_HOST:-"wp_db:3306"}
+      WORDPRESS_DB_NAME: ${MYSQL_DATABASE:-"wordpressdb"}
+      WORDPRESS_DB_USER: ${MYSQL_USER:-"wordpressuser"}
+      WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD:-"changeme"}
+    networks:
+      - wordpress
+      - default
+
+  # Change default IP (127.0.0.1) with the container name (wp_memcached) in the W3 Total Cache plugin
+  # when using memcached option
+  wp_memcached:
+    image: memcached:latest
+    environment:
+      - MEMCACHED_MAX_CONNECTIONS=1000
+      - MEMCACHED_THREADS=2
+    ports:
+      - 11211:11211
+    networks:
+      - wordpress
+
+  wp_db:
+    image: mariadb:focal
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-"wordpressdb"}
+      MYSQL_USER: ${MYSQL_USER:-"wordpressuser"}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-"changeme"}
+      MYSQL_RANDOM_ROOT_PASSWORD: "1"
+    volumes:
+      - ./mariadb/conf/custom-mysql.cnf:/etc/mysql/conf.d/custom-mysql.cnf
+      - datasqlwp:/var/lib/mysql
+    ports:
+      - 3306:3306
+    networks:
+      - wordpress
+
+  wp_redis:
+    image: redis:6
+    restart: unless-stopped
+    volumes:
+      - dataredis:/data
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --requirepass changemeWithALongPassword --appendonly yes --bind wp_redis
+    ports:
+      - 6379:6379
+    networks:
+      - wordpress
+
+networks:
+  default:
+    external:
+      name: gateway
+  wordpress:
+    internal: true
+
+volumes:
+  datasqlwp:
+  datanginxlogs:
+  datawp:
+  dataredis:
